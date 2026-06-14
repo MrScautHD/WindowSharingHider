@@ -35,6 +35,7 @@ namespace WindowSharingHider
         const String AutostartValueName = "WindowSharingHider";
         const Int32 VisibleAffinity = 0x0;
         const Int32 HiddenAffinity = 0x11;
+        const Int32 LegacyHiddenAffinity = 0x1;
         readonly Dictionary<IntPtr, Int32> automaticHideOriginalAffinities = new Dictionary<IntPtr, Int32>();
         Boolean automaticHideActive = false;
         Boolean initializingControls = false;
@@ -66,22 +67,21 @@ namespace WindowSharingHider
                 if (shouldAutoHideAll)
                 {
                     if (!automaticHideOriginalAffinities.ContainsKey(window.Handle)) automaticHideOriginalAffinities[window.Handle] = status;
-                    if (status != HiddenAffinity)
-                    {
-                        WindowHandler.SetWindowDisplayAffinity(window.Handle, HiddenAffinity);
-                        status = WindowHandler.GetWindowDisplayAffinity(window.Handle);
-                    }
+                    if (status != HiddenAffinity && status != LegacyHiddenAffinity) status = SetHiddenAffinityWithFallback(window.Handle);
                 }
                 else
                 {
                     var target = windowListCheckBox.GetItemChecked(index) ? HiddenAffinity : VisibleAffinity;
                     if (target != status && flagToPreserveSettings)
                     {
-                        WindowHandler.SetWindowDisplayAffinity(window.Handle, target);
-                        status = WindowHandler.GetWindowDisplayAffinity(window.Handle);
+                        if (target == HiddenAffinity) status = SetHiddenAffinityWithFallback(window.Handle);
+                        else
+                        {
+                            WindowHandler.SetWindowDisplayAffinity(window.Handle, target);
+                            status = WindowHandler.GetWindowDisplayAffinity(window.Handle);
+                        }
                     }
                 }
-                windowListCheckBox.SetItemChecked(index, status > 0);
             }
             flagToPreserveSettings = true;
         }
@@ -144,15 +144,21 @@ namespace WindowSharingHider
 
         private void RestoreAutomaticHideOriginalAffinities()
         {
-            foreach (var window in windowListCheckBox.Items.Cast<WindowInfo>().ToArray())
+            foreach (var entry in automaticHideOriginalAffinities.ToArray())
             {
-                if (!automaticHideOriginalAffinities.TryGetValue(window.Handle, out Int32 originalAffinity)) continue;
-
-                var index = windowListCheckBox.Items.IndexOf(window);
-                WindowHandler.SetWindowDisplayAffinity(window.Handle, originalAffinity);
-                windowListCheckBox.SetItemChecked(index, originalAffinity > 0);
+                WindowHandler.SetWindowDisplayAffinity(entry.Key, entry.Value);
             }
             automaticHideOriginalAffinities.Clear();
+        }
+
+        private static Int32 SetHiddenAffinityWithFallback(IntPtr windowHandle)
+        {
+            WindowHandler.SetWindowDisplayAffinity(windowHandle, HiddenAffinity);
+            var status = WindowHandler.GetWindowDisplayAffinity(windowHandle);
+            if (status == HiddenAffinity || status == LegacyHiddenAffinity) return status;
+
+            WindowHandler.SetWindowDisplayAffinity(windowHandle, LegacyHiddenAffinity);
+            return WindowHandler.GetWindowDisplayAffinity(windowHandle);
         }
 
         private void HideToBackground()
