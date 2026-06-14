@@ -42,7 +42,6 @@ namespace WindowSharingHider
                 if (!IsWindowVisible(hWnd)) return true;
                 DwmGetWindowAttribute(hWnd, 14, out Int32 pvAttribute, 4);
                 if (pvAttribute > 0) return true;
-                if (IsTaskbarWindow(hWnd)) return true;
                 var length = GetWindowTextLength(hWnd);
                 if (length == 0) return true;
                 var windowTextBuilder = new StringBuilder(length + 1);
@@ -51,6 +50,12 @@ namespace WindowSharingHider
                 windows[hWnd] = windowTitle;
                 return true;
             }, IntPtr.Zero);
+            var taskbarIndex = 0;
+            foreach (var taskbarWindow in GetTaskbarWindows())
+            {
+                taskbarIndex++;
+                windows[taskbarWindow] = taskbarIndex == 1 ? "Taskbar" : "Taskbar " + taskbarIndex;
+            }
             foreach (var desktopWindow in GetDesktopIconsWindows()) windows[desktopWindow] = "Desktop and Icons";
             return windows;
         }
@@ -59,16 +64,14 @@ namespace WindowSharingHider
         {
             var windows = new HashSet<IntPtr>();
             var progman = FindWindow("Progman", "Program Manager");
-            if (progman != IntPtr.Zero) windows.Add(progman);
+            AddDesktopWindowTargets(windows, progman);
 
             var workerW = IntPtr.Zero;
             while (true)
             {
                 workerW = FindWindowEx(IntPtr.Zero, workerW, "WorkerW", null);
                 if (workerW == IntPtr.Zero) break;
-
-                var shellView = FindWindowEx(workerW, IntPtr.Zero, "SHELLDLL_DefView", null);
-                if (shellView != IntPtr.Zero) windows.Add(workerW);
+                AddDesktopWindowTargets(windows, workerW);
             }
             if (windows.Count == 0 && progman != IntPtr.Zero) windows.Add(progman);
             return windows;
@@ -113,6 +116,24 @@ namespace WindowSharingHider
             }
         }
 
+        public static HashSet<IntPtr> GetWindowsByProcessName(String processName)
+        {
+            var windows = new HashSet<IntPtr>();
+            if (String.IsNullOrWhiteSpace(processName)) return windows;
+
+            EnumWindows(delegate (IntPtr hWnd, IntPtr lParam)
+            {
+                if (!IsWindowVisible(hWnd)) return true;
+                DwmGetWindowAttribute(hWnd, 14, out Int32 pvAttribute, 4);
+                if (pvAttribute > 0) return true;
+                if (IsTaskbarWindow(hWnd)) return true;
+                if (!String.Equals(GetWindowProcessName(hWnd), processName, StringComparison.OrdinalIgnoreCase)) return true;
+                windows.Add(hWnd);
+                return true;
+            }, IntPtr.Zero);
+            return windows;
+        }
+
         public static HashSet<IntPtr> GetTaskbarWindows()
         {
             var windows = new HashSet<IntPtr>();
@@ -122,6 +143,11 @@ namespace WindowSharingHider
                 return true;
             }, IntPtr.Zero);
             return windows;
+        }
+
+        public static Boolean IsTaskbarWindowHandle(IntPtr hWnd)
+        {
+            return IsTaskbarWindow(hWnd);
         }
         public static Int32 GetWindowDisplayAffinity(IntPtr hWnd)
         {
@@ -234,6 +260,20 @@ namespace WindowSharingHider
             }
             asm.Add(0xC3); // ret
             return asm.ToArray();
+        }
+
+        private static void AddDesktopWindowTargets(HashSet<IntPtr> windows, IntPtr parentWindow)
+        {
+            if (parentWindow == IntPtr.Zero) return;
+
+            var shellView = FindWindowEx(parentWindow, IntPtr.Zero, "SHELLDLL_DefView", null);
+            if (shellView == IntPtr.Zero) return;
+
+            windows.Add(parentWindow);
+            windows.Add(shellView);
+
+            var folderView = FindWindowEx(shellView, IntPtr.Zero, "SysListView32", "FolderView");
+            if (folderView != IntPtr.Zero) windows.Add(folderView);
         }
 
         private static Boolean IsTaskbarWindow(IntPtr hWnd)

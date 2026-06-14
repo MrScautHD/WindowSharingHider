@@ -59,7 +59,6 @@ namespace WindowSharingHider
             var shouldAutoHideAll = ShouldAutoHideAll();
             if (!shouldAutoHideAll && automaticHideActive) RestoreAutomaticHideOriginalAffinities();
             automaticHideActive = shouldAutoHideAll;
-            if (!shouldAutoHideAll) EnsureTaskbarVisible();
 
             foreach (var window in windowListCheckBox.Items.Cast<WindowInfo>().ToArray())
             {
@@ -80,8 +79,8 @@ namespace WindowSharingHider
                     if (target != status && flagToPreserveSettings)
                     {
                         var isDesktopIcons = String.Equals(window.Title, "Desktop and Icons", StringComparison.Ordinal);
-                        var includeRelatedWindows = !isDesktopIcons && IsFirefoxWindow(window.Handle);
-                        status = SetAffinityWithFallback(window.Handle, target, includeRelatedWindows, isDesktopIcons);
+                        var isTaskbar = window.Title.StartsWith("Taskbar", StringComparison.Ordinal);
+                        status = SetAffinityWithFallback(window.Handle, target, isDesktopIcons, isTaskbar);
                     }
                 }
             }
@@ -151,19 +150,23 @@ namespace WindowSharingHider
                 WindowHandler.SetWindowDisplayAffinity(entry.Key, entry.Value);
             }
             automaticHideOriginalAffinities.Clear();
-            EnsureTaskbarVisible();
         }
 
-        private static void EnsureTaskbarVisible()
-        {
-            foreach (var handle in WindowHandler.GetTaskbarWindows()) WindowHandler.SetWindowDisplayAffinity(handle, VisibleAffinity);
-        }
-
-        private static Int32 SetAffinityWithFallback(IntPtr windowHandle, Int32 targetAffinity, Boolean includeRelatedWindows, Boolean includeDesktopWindows)
+        private static Int32 SetAffinityWithFallback(IntPtr windowHandle, Int32 targetAffinity, Boolean includeDesktopWindows, Boolean includeTaskbarWindows)
         {
             var targetHandles = new HashSet<IntPtr> { windowHandle };
             if (includeDesktopWindows) foreach (var handle in WindowHandler.GetDesktopIconsWindows()) targetHandles.Add(handle);
-            if (includeRelatedWindows) foreach (var handle in WindowHandler.GetProcessTopLevelWindows(windowHandle)) targetHandles.Add(handle);
+            if (includeTaskbarWindows) foreach (var handle in WindowHandler.GetTaskbarWindows()) targetHandles.Add(handle);
+
+            var processName = WindowHandler.GetWindowProcessName(windowHandle);
+            if (String.Equals(processName, "firefox", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var handle in WindowHandler.GetWindowsByProcessName(processName)) targetHandles.Add(handle);
+            }
+            else if (!includeDesktopWindows && !includeTaskbarWindows)
+            {
+                foreach (var handle in WindowHandler.GetProcessTopLevelWindows(windowHandle)) targetHandles.Add(handle);
+            }
 
             var finalStatus = WindowHandler.GetWindowDisplayAffinity(windowHandle);
             foreach (var targetHandle in targetHandles)
@@ -186,11 +189,6 @@ namespace WindowSharingHider
                 }
             }
             return finalStatus;
-        }
-
-        private static Boolean IsFirefoxWindow(IntPtr windowHandle)
-        {
-            return String.Equals(WindowHandler.GetWindowProcessName(windowHandle), "firefox", StringComparison.OrdinalIgnoreCase);
         }
 
         private void HideToBackground()
