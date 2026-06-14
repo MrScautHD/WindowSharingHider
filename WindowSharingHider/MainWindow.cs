@@ -59,6 +59,7 @@ namespace WindowSharingHider
             var shouldAutoHideAll = ShouldAutoHideAll();
             if (!shouldAutoHideAll && automaticHideActive) RestoreAutomaticHideOriginalAffinities();
             automaticHideActive = shouldAutoHideAll;
+            if (!shouldAutoHideAll) EnsureTaskbarVisible();
 
             foreach (var window in windowListCheckBox.Items.Cast<WindowInfo>().ToArray())
             {
@@ -67,19 +68,20 @@ namespace WindowSharingHider
                 if (shouldAutoHideAll)
                 {
                     if (!automaticHideOriginalAffinities.ContainsKey(window.Handle)) automaticHideOriginalAffinities[window.Handle] = status;
-                    if (status != HiddenAffinity && status != LegacyHiddenAffinity) status = SetHiddenAffinityWithFallback(window.Handle);
+                    if (status != HiddenAffinity && status != LegacyHiddenAffinity)
+                    {
+                        var isDesktopIcons = String.Equals(window.Title, "Desktop and Icons", StringComparison.Ordinal);
+                        status = SetAffinityWithFallback(window.Handle, HiddenAffinity, false, isDesktopIcons);
+                    }
                 }
                 else
                 {
                     var target = windowListCheckBox.GetItemChecked(index) ? HiddenAffinity : VisibleAffinity;
                     if (target != status && flagToPreserveSettings)
                     {
-                        if (target == HiddenAffinity) status = SetHiddenAffinityWithFallback(window.Handle);
-                        else
-                        {
-                            WindowHandler.SetWindowDisplayAffinity(window.Handle, target);
-                            status = WindowHandler.GetWindowDisplayAffinity(window.Handle);
-                        }
+                        var isDesktopIcons = String.Equals(window.Title, "Desktop and Icons", StringComparison.Ordinal);
+                        var includeRelatedWindows = !isDesktopIcons && IsFirefoxWindow(window.Handle);
+                        status = SetAffinityWithFallback(window.Handle, target, includeRelatedWindows, isDesktopIcons);
                     }
                 }
             }
@@ -149,16 +151,46 @@ namespace WindowSharingHider
                 WindowHandler.SetWindowDisplayAffinity(entry.Key, entry.Value);
             }
             automaticHideOriginalAffinities.Clear();
+            EnsureTaskbarVisible();
         }
 
-        private static Int32 SetHiddenAffinityWithFallback(IntPtr windowHandle)
+        private static void EnsureTaskbarVisible()
         {
-            WindowHandler.SetWindowDisplayAffinity(windowHandle, HiddenAffinity);
-            var status = WindowHandler.GetWindowDisplayAffinity(windowHandle);
-            if (status == HiddenAffinity || status == LegacyHiddenAffinity) return status;
+            foreach (var handle in WindowHandler.GetTaskbarWindows()) WindowHandler.SetWindowDisplayAffinity(handle, VisibleAffinity);
+        }
 
-            WindowHandler.SetWindowDisplayAffinity(windowHandle, LegacyHiddenAffinity);
-            return WindowHandler.GetWindowDisplayAffinity(windowHandle);
+        private static Int32 SetAffinityWithFallback(IntPtr windowHandle, Int32 targetAffinity, Boolean includeRelatedWindows, Boolean includeDesktopWindows)
+        {
+            var targetHandles = new HashSet<IntPtr> { windowHandle };
+            if (includeDesktopWindows) foreach (var handle in WindowHandler.GetDesktopIconsWindows()) targetHandles.Add(handle);
+            if (includeRelatedWindows) foreach (var handle in WindowHandler.GetProcessTopLevelWindows(windowHandle)) targetHandles.Add(handle);
+
+            var finalStatus = WindowHandler.GetWindowDisplayAffinity(windowHandle);
+            foreach (var targetHandle in targetHandles)
+            {
+                if (targetAffinity == HiddenAffinity)
+                {
+                    WindowHandler.SetWindowDisplayAffinity(targetHandle, HiddenAffinity);
+                    var status = WindowHandler.GetWindowDisplayAffinity(targetHandle);
+                    if (status != HiddenAffinity && status != LegacyHiddenAffinity)
+                    {
+                        WindowHandler.SetWindowDisplayAffinity(targetHandle, LegacyHiddenAffinity);
+                        status = WindowHandler.GetWindowDisplayAffinity(targetHandle);
+                    }
+                    if (targetHandle == windowHandle) finalStatus = status;
+                }
+                else
+                {
+                    WindowHandler.SetWindowDisplayAffinity(targetHandle, targetAffinity);
+                    if (targetHandle == windowHandle) finalStatus = WindowHandler.GetWindowDisplayAffinity(targetHandle);
+                }
+            }
+            return finalStatus;
+        }
+
+        private static Boolean IsFirefoxWindow(IntPtr windowHandle)
+        {
+            return String.Equals(WindowHandler.GetWindowProcessName(windowHandle), "firefox", StringComparison.OrdinalIgnoreCase);
         }
 
         private void HideToBackground()

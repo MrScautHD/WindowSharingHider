@@ -1,5 +1,6 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Linq;
 using System.Text;
@@ -12,6 +13,7 @@ namespace WindowSharingHider
         [DllImport("user32")] static extern Boolean IsWindowVisible(IntPtr hWnd);
         [DllImport("user32", CharSet = CharSet.Auto)] static extern IntPtr FindWindow(String lpClassName, String lpWindowName);
         [DllImport("user32", CharSet = CharSet.Auto)] static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, String className, String windowTitle);
+        [DllImport("user32", CharSet = CharSet.Auto)] static extern Int32 GetClassName(IntPtr hWnd, StringBuilder lpClassName, Int32 nMaxCount);
         [DllImport("dwmapi.dll")] static extern Int32 DwmGetWindowAttribute(IntPtr hwnd, Int32 dwAttribute, out Int32 pvAttribute, Int32 cbAttribute);
 
         [DllImport("user32")] static extern IntPtr GetWindowText(IntPtr hWnd, StringBuilder lpString, Int32 nMaxCount);
@@ -40,6 +42,7 @@ namespace WindowSharingHider
                 if (!IsWindowVisible(hWnd)) return true;
                 DwmGetWindowAttribute(hWnd, 14, out Int32 pvAttribute, 4);
                 if (pvAttribute > 0) return true;
+                if (IsTaskbarWindow(hWnd)) return true;
                 var length = GetWindowTextLength(hWnd);
                 if (length == 0) return true;
                 var windowTextBuilder = new StringBuilder(length + 1);
@@ -52,15 +55,11 @@ namespace WindowSharingHider
             return windows;
         }
 
-        private static IEnumerable<IntPtr> GetDesktopIconsWindows()
+        public static HashSet<IntPtr> GetDesktopIconsWindows()
         {
             var windows = new HashSet<IntPtr>();
             var progman = FindWindow("Progman", "Program Manager");
-            if (progman != IntPtr.Zero)
-            {
-                var progmanShellView = FindWindowEx(progman, IntPtr.Zero, "SHELLDLL_DefView", null);
-                if (progmanShellView != IntPtr.Zero) windows.Add(progman);
-            }
+            if (progman != IntPtr.Zero) windows.Add(progman);
 
             var workerW = IntPtr.Zero;
             while (true)
@@ -72,6 +71,56 @@ namespace WindowSharingHider
                 if (shellView != IntPtr.Zero) windows.Add(workerW);
             }
             if (windows.Count == 0 && progman != IntPtr.Zero) windows.Add(progman);
+            return windows;
+        }
+
+        public static HashSet<IntPtr> GetProcessTopLevelWindows(IntPtr sourceWindowHandle)
+        {
+            var windows = new HashSet<IntPtr>();
+            GetWindowThreadProcessId(sourceWindowHandle, out Int32 processId);
+            if (processId <= 0)
+            {
+                windows.Add(sourceWindowHandle);
+                return windows;
+            }
+
+            EnumWindows(delegate (IntPtr hWnd, IntPtr lParam)
+            {
+                GetWindowThreadProcessId(hWnd, out Int32 candidateProcessId);
+                if (candidateProcessId != processId) return true;
+                if (!IsWindowVisible(hWnd)) return true;
+                DwmGetWindowAttribute(hWnd, 14, out Int32 pvAttribute, 4);
+                if (pvAttribute > 0) return true;
+                if (IsTaskbarWindow(hWnd)) return true;
+                windows.Add(hWnd);
+                return true;
+            }, IntPtr.Zero);
+            if (windows.Count == 0) windows.Add(sourceWindowHandle);
+            return windows;
+        }
+
+        public static String GetWindowProcessName(IntPtr hWnd)
+        {
+            GetWindowThreadProcessId(hWnd, out Int32 processId);
+            if (processId <= 0) return String.Empty;
+            try
+            {
+                using (var process = Process.GetProcessById(processId)) return process.ProcessName;
+            }
+            catch
+            {
+                return String.Empty;
+            }
+        }
+
+        public static HashSet<IntPtr> GetTaskbarWindows()
+        {
+            var windows = new HashSet<IntPtr>();
+            EnumWindows(delegate (IntPtr hWnd, IntPtr lParam)
+            {
+                if (IsTaskbarWindow(hWnd)) windows.Add(hWnd);
+                return true;
+            }, IntPtr.Zero);
             return windows;
         }
         public static Int32 GetWindowDisplayAffinity(IntPtr hWnd)
@@ -185,6 +234,15 @@ namespace WindowSharingHider
             }
             asm.Add(0xC3); // ret
             return asm.ToArray();
+        }
+
+        private static Boolean IsTaskbarWindow(IntPtr hWnd)
+        {
+            var className = new StringBuilder(256);
+            if (GetClassName(hWnd, className, className.Capacity) <= 0) return false;
+            var cls = className.ToString();
+            return String.Equals(cls, "Shell_TrayWnd", StringComparison.OrdinalIgnoreCase)
+                   || String.Equals(cls, "Shell_SecondaryTrayWnd", StringComparison.OrdinalIgnoreCase);
         }
     }
 }
