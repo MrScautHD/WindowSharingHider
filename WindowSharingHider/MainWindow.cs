@@ -15,6 +15,7 @@ namespace WindowSharingHider
         {
             public String Title { get; set; }
             public IntPtr Handle { get; set; }
+            public WindowHandler.WindowKind Kind { get; set; }
             public Boolean stillExists = false;
             public override string ToString()
             {
@@ -37,22 +38,24 @@ namespace WindowSharingHider
         const Int32 HiddenAffinity = 0x11;
         const Int32 LegacyHiddenAffinity = 0x1;
         readonly Dictionary<IntPtr, Int32> automaticHideOriginalAffinities = new Dictionary<IntPtr, Int32>();
+        readonly Dictionary<IntPtr, Int32> appliedAffinities = new Dictionary<IntPtr, Int32>();
         Boolean automaticHideActive = false;
         Boolean initializingControls = false;
         Boolean flagToPreserveSettings = false;
         private void Timer_Tick(object sender, EventArgs e)
         {
             foreach (WindowInfo window in windowListCheckBox.Items) window.stillExists = false;
-            var currWindows = WindowHandler.GetVisibleWindows();
+            var currWindows = WindowHandler.GetVisibleWindowInfos();
             foreach (var window in currWindows)
             {
-                var existingWindow = windowListCheckBox.Items.Cast<WindowInfo>().FirstOrDefault(i => i.Handle == window.Key);
+                var existingWindow = windowListCheckBox.Items.Cast<WindowInfo>().FirstOrDefault(i => i.Handle == window.Handle);
                 if (existingWindow != null)
                 {
                     existingWindow.stillExists = true;
-                    existingWindow.Title = window.Value;
+                    existingWindow.Title = window.Title;
+                    existingWindow.Kind = window.Kind;
                 }
-                else windowListCheckBox.Items.Add(new WindowInfo { Title = window.Value, Handle = window.Key, stillExists = true });
+                else windowListCheckBox.Items.Add(new WindowInfo { Title = window.Title, Handle = window.Handle, Kind = window.Kind, stillExists = true });
             }
             foreach (var window in windowListCheckBox.Items.Cast<WindowInfo>().ToArray()) if (window.stillExists == false) windowListCheckBox.Items.Remove(window);
 
@@ -63,24 +66,22 @@ namespace WindowSharingHider
             foreach (var window in windowListCheckBox.Items.Cast<WindowInfo>().ToArray())
             {
                 var status = WindowHandler.GetWindowDisplayAffinity(window.Handle);
+                var effectiveStatus = appliedAffinities.TryGetValue(window.Handle, out Int32 appliedAffinity) ? appliedAffinity : status;
                 var index = windowListCheckBox.Items.IndexOf(window);
                 if (shouldAutoHideAll)
                 {
                     if (!automaticHideOriginalAffinities.ContainsKey(window.Handle)) automaticHideOriginalAffinities[window.Handle] = status;
-                    if (status != HiddenAffinity && status != LegacyHiddenAffinity)
+                    if (effectiveStatus != HiddenAffinity && effectiveStatus != LegacyHiddenAffinity)
                     {
-                        var isDesktopIcons = String.Equals(window.Title, "Desktop and Icons", StringComparison.Ordinal);
-                        status = SetAffinityWithFallback(window.Handle, HiddenAffinity, false, isDesktopIcons);
+                        ApplyAffinity(window.Handle, HiddenAffinity, window.Kind);
                     }
                 }
                 else
                 {
                     var target = windowListCheckBox.GetItemChecked(index) ? HiddenAffinity : VisibleAffinity;
-                    if (target != status && flagToPreserveSettings)
+                    if (target != effectiveStatus && flagToPreserveSettings)
                     {
-                        var isDesktopIcons = String.Equals(window.Title, "Desktop and Icons", StringComparison.Ordinal);
-                        var isTaskbar = window.Title.StartsWith("Taskbar", StringComparison.Ordinal);
-                        status = SetAffinityWithFallback(window.Handle, target, isDesktopIcons, isTaskbar);
+                        ApplyAffinity(window.Handle, target, window.Kind);
                     }
                 }
             }
@@ -148,47 +149,50 @@ namespace WindowSharingHider
             foreach (var entry in automaticHideOriginalAffinities.ToArray())
             {
                 WindowHandler.SetWindowDisplayAffinity(entry.Key, entry.Value);
+                appliedAffinities.Remove(entry.Key);
             }
             automaticHideOriginalAffinities.Clear();
         }
 
-        private static Int32 SetAffinityWithFallback(IntPtr windowHandle, Int32 targetAffinity, Boolean includeDesktopWindows, Boolean includeTaskbarWindows)
+        private void ApplyAffinity(IntPtr windowHandle, Int32 targetAffinity, WindowHandler.WindowKind kind)
         {
             var targetHandles = new HashSet<IntPtr> { windowHandle };
-            if (includeDesktopWindows) foreach (var handle in WindowHandler.GetDesktopIconsWindows()) targetHandles.Add(handle);
-            if (includeTaskbarWindows) foreach (var handle in WindowHandler.GetTaskbarWindows()) targetHandles.Add(handle);
-
-            var processName = WindowHandler.GetWindowProcessName(windowHandle);
-            if (String.Equals(processName, "firefox", StringComparison.OrdinalIgnoreCase))
+            if (kind == WindowHandler.WindowKind.DesktopIcons) foreach (var handle in WindowHandler.GetDesktopIconsWindows()) targetHandles.Add(handle);
+            else if (kind == WindowHandler.WindowKind.Taskbar) foreach (var handle in WindowHandler.GetTaskbarWindows()) targetHandles.Add(handle);
+            else if (kind == WindowHandler.WindowKind.StartMenu) foreach (var handle in WindowHandler.GetStartMenuWindows()) targetHandles.Add(handle);
+            else if (kind == WindowHandler.WindowKind.Search) foreach (var handle in WindowHandler.GetSearchWindows()) targetHandles.Add(handle);
+            else if (kind == WindowHandler.WindowKind.Firefox)
             {
-                foreach (var handle in WindowHandler.GetWindowsByProcessName(processName)) targetHandles.Add(handle);
+                foreach (var handle in WindowHandler.GetFirefoxWindows()) targetHandles.Add(handle);
             }
-            else if (!includeDesktopWindows && !includeTaskbarWindows)
+            else
             {
                 foreach (var handle in WindowHandler.GetProcessTopLevelWindows(windowHandle)) targetHandles.Add(handle);
             }
 
-            var finalStatus = WindowHandler.GetWindowDisplayAffinity(windowHandle);
             foreach (var targetHandle in targetHandles)
             {
                 if (targetAffinity == HiddenAffinity)
                 {
-                    WindowHandler.SetWindowDisplayAffinity(targetHandle, HiddenAffinity);
-                    var status = WindowHandler.GetWindowDisplayAffinity(targetHandle);
-                    if (status != HiddenAffinity && status != LegacyHiddenAffinity)
+                    if (WindowHandler.TrySetWindowDisplayAffinity(targetHandle, HiddenAffinity, true))
                     {
-                        WindowHandler.SetWindowDisplayAffinity(targetHandle, LegacyHiddenAffinity);
-                        status = WindowHandler.GetWindowDisplayAffinity(targetHandle);
+                        appliedAffinities[targetHandle] = HiddenAffinity;
                     }
-                    if (targetHandle == windowHandle) finalStatus = status;
+                    else if (WindowHandler.TrySetWindowDisplayAffinity(targetHandle, LegacyHiddenAffinity, true))
+                    {
+                        appliedAffinities[targetHandle] = LegacyHiddenAffinity;
+                    }
+                    else
+                    {
+                        appliedAffinities[targetHandle] = HiddenAffinity;
+                    }
                 }
                 else
                 {
-                    WindowHandler.SetWindowDisplayAffinity(targetHandle, targetAffinity);
-                    if (targetHandle == windowHandle) finalStatus = WindowHandler.GetWindowDisplayAffinity(targetHandle);
+                    WindowHandler.TrySetWindowDisplayAffinity(targetHandle, targetAffinity, true);
+                    appliedAffinities.Remove(targetHandle);
                 }
             }
-            return finalStatus;
         }
 
         private void HideToBackground()
